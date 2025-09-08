@@ -11,6 +11,11 @@ A Python-based monitoring solution that tracks the health of your Lightning Netw
 - **⚡ Smart Alerting**: Prevents false positives with intelligent state tracking
 - **📊 Node Information**: Displays detailed node stats (alias, version, channels, sync status)
 - **🔄 Auto-recovery Detection**: Notifies when node comes back online after outages
+- **🤖 Interactive Bot Commands**: On-demand node information via Telegram commands
+- **⚡ Channel Management**: Monitor channel capacity, balances, and peer connections
+- **💰 Balance Tracking**: View on-chain and Lightning balances in real-time
+- **🌐 Peer Monitoring**: Track connected peers and sync status
+- **💸 Fee Analytics**: Monitor routing performance and earnings
 
 ## 📋 Prerequisites
 
@@ -119,6 +124,111 @@ docker run -d \
   lnd-monitor
 ```
 
+## 🤖 Interactive Bot Commands
+
+The bot provides interactive commands for on-demand node information:
+
+### Available Commands
+
+| Command | Description | Example Output |
+|---------|-------------|----------------|
+| `/help` | Show available commands and bot info | Command list and features |
+| `/info` | Get current node information | Node alias, version, sync status, peers |
+| `/balance` | Get total node balance | On-chain + Lightning balances |
+| `/channels` | Get channel overview | Active channels, capacity, top peers |
+| `/peers` | Get peer connections | Connected peers, sync status |
+| `/fees` | Get routing performance | 30-day earnings, routing events |
+
+### Command Examples
+
+#### `/info` - Node Information
+
+```text
+📊 Node Information
+
+🟢 LND Node Online
+📛 Alias: MyLightningNode
+🔧 Version: 0.17.4-beta
+📊 Block: 825431
+⚡ Active channels: 12
+🔗 Synced: Yes
+
+🔍 Additional Details:
+🆔 Public Key: 03abc123def456...
+🌐 Network: mainnet
+🔗 Peers: 8
+📡 Pending Channels: 0
+```
+
+#### `/balance` - Complete Balance Overview
+
+```text
+💰 Total Node Balance
+
+🔗 On-Chain Wallet:
+✅ Confirmed: 1.50000000 BTC (150,000,000 sats)
+⏳ Unconfirmed: 0 sats
+
+⚡ Lightning Channels:
+💡 Available: 500k sats (500,000)
+
+💎 Total Balance:
+🎯 1.50500000 BTC (150,500,000 sats)
+```
+
+#### `/channels` - Channel Overview
+
+```text
+⚡ Channel Overview
+
+📊 Summary:
+• Active Channels: 12
+• Total Capacity: 50M sats (50,000,000)
+• Local Balance: 25M sats (25,000,000)
+• Remote Balance: 25M sats (25,000,000)
+
+🟢 Online: 11 | 🔴 Offline: 1
+⏳ Pending: 0
+
+🔝 Top Channels:
+• ACINQ (5M sats) 🟢
+• Bitrefill (3M sats) 🟢
+• WalletOfSatoshi (2M sats) 🔴
+```
+
+#### `/peers` - Peer Connections
+
+```text
+🌐 Peer Connections
+
+📡 Status:
+• Connected Peers: 8
+• Sync Status: ✅ Synced
+
+🔗 Connected Peers:
+• 03abc123def456...onion 📤
+• 02def789ghi012...onion 📥
+• 01ghi345jkl678...onion 📤
+• lightning.bitrefill.com 📥
+```
+
+#### `/fees` - Routing Performance
+
+```text
+💸 Fee Summary (30 days)
+
+📈 Routing Performance:
+• Total Earned: 1,250 sats
+• Routing Events: 45
+• Average Fee: 27 sats
+• Total Volume: 2.5M sats (2,500,000)
+
+📊 Recent Activity:
+• 100k sats → 25 sats fee
+• 50k sats → 15 sats fee
+• 200k sats → 45 sats fee
+```
+
 ## 📱 Telegram Notifications
 
 The monitor sends different types of notifications:
@@ -131,6 +241,9 @@ The monitor sends different types of notifications:
 ⏱️ Interval: 120s
 📍 From: UmbrelOS via Tor
 🔧 Proxy: socks5h://127.0.0.1:9050
+
+🤖 Interactive Bot Active!
+Send /help for available commands
 ```
 
 ### ✅ Node Back Online
@@ -224,6 +337,7 @@ tail -f data/lnd_monitor.log
 - **Environment Variables**: Sensitive data stored in `.env` file (not committed)
 - **Tor Proxy**: All LND communication goes through Tor for privacy
 - **No Data Storage**: Only logs operational status, no sensitive node data
+- **Chat ID Verification**: Bot only responds to authorized Telegram chat ID
 
 ## 🤝 Contributing
 
