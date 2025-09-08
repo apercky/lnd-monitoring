@@ -220,8 +220,18 @@ def main():
                 consecutive_failures = 0
                 last_successful_check = current_time
                 
+                # Send initial online status after startup
+                if last_status is None:
+                    initial_msg = f"""
+✅ <b>Start9 Node ONLINE!</b>
+⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
+{format_node_info(node_info)}
+                    """
+                    send_telegram_message(initial_msg)
+                    logger.info("Initial node status confirmed online")
+                
                 # If it was offline AND we sent an offline alert, send recovery notification
-                if last_status is False and offline_alert_sent:
+                elif last_status is False and offline_alert_sent:
                     uptime_msg = f"""
 ✅ <b>Start9 Node BACK ONLINE!</b>
 ⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
