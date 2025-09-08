@@ -755,7 +755,7 @@ Send /help for available commands
                     logger.info("Initial node status confirmed online")
                 
                 # If it was offline AND we sent an offline alert, send recovery notification
-                elif last_status is False and offline_alert_sent:
+                elif offline_alert_sent:
                     uptime_msg = f"""
 ✅ <b>Start9 Node BACK ONLINE!</b>
 ⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
@@ -774,7 +774,7 @@ Send /help for available commands
                 logger.warning(f"Failed attempt {consecutive_failures}/{MAX_RETRIES}")
                 
                 # Send alert only after MAX_RETRIES consecutive failures
-                if consecutive_failures >= MAX_RETRIES and last_status is not False:
+                if consecutive_failures >= MAX_RETRIES and not offline_alert_sent:
                     offline_msg = f"""
 🚨 <b>START9 NODE OFFLINE!</b>
 ⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
