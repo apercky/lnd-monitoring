@@ -36,17 +36,17 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 # Start9 LND Node
 NODE_ONION_ADDRESS = os.getenv('LND_NODE_ONION_ADDRESS')
-NODE_PORT = os.getenv('LND_NODE_PORT') | "8080"
+NODE_PORT = os.getenv('LND_NODE_PORT', "8080")
 
 # Macaroon from environment variable
 MACAROON_BASE64 = os.getenv('LND_MACAROON_RO')
 
 # Monitoring configuration
-CHECK_INTERVAL = os.getenv('CHECK_INTERVAL') | 120  # Seconds between checks (2 minutes)
-TIMEOUT = os.getenv('TIMEOUT') | 30                 # Timeout for HTTP requests
-MAX_RETRIES = os.getenv('MAX_RETRIES') | 3          # Attempts before considering offline
+CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '120'))  # Seconds between checks (2 minutes)
+TIMEOUT = int(os.getenv('TIMEOUT', '30'))                 # Timeout for HTTP requests
+MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))          # Attempts before considering offline
 
-TOR_CHECK_URL = os.getenv('TOR_CHECK_URL') | "http://check.torproject.org/api/ip"
+TOR_CHECK_URL = os.getenv('TOR_CHECK_URL', "http://check.torproject.org/api/ip")
 
 if MACAROON_BASE64:
     try:

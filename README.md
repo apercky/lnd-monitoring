@@ -90,8 +90,6 @@ services:
     build: .
     container_name: lnd-monitor
     restart: unless-stopped
-    networks:
-      - umbrel_net
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
@@ -104,11 +102,6 @@ services:
       - TOR_CHECK_URL=${TOR_CHECK_URL:-http://check.torproject.org/api/ip}
     volumes:
       - ./data:/data
-
-networks:
-  umbrel_net:
-    external: true
-    name: umbrel_main_network
 ```
 
 ### Manual Docker Build
@@ -210,16 +203,6 @@ echo "your_macaroon_here" | base64 -d | hexdump -C
 
 # Re-export from Start9 dashboard
 # Make sure to use readonly macaroon
-```
-
-#### Docker Network Issues
-
-```bash
-# Check if umbrel network exists
-docker network ls | grep umbrel
-
-# Create network if missing (adjust name as needed)
-docker network create umbrel_main_network
 ```
 
 ### Logs and Debugging

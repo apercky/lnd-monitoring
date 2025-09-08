@@ -3,8 +3,6 @@ services:
     build: .
     container_name: lnd-monitor
     restart: unless-stopped
-    networks:
-      - umbrel_net
     environment:
       - LND_NODE_ONION_ADDRESS=${LND_NODE_ONION_ADDRESS}
       - LND_MACAROON_RO=${LND_MACAROON_RO}
@@ -16,9 +14,4 @@ services:
       - MAX_RETRIES=${MAX_RETRIES:-3}
       - TOR_CHECK_URL=${TOR_CHECK_URL:-http://check.torproject.org/api/ip}
     volumes:
-      - ./data:/data
-
-networks:
-  umbrel_net:
-    external: true
-    name: umbrel_main_network   
+      - ./data:/data   
