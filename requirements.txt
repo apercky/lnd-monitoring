@@ -1,13 +1,15 @@
-# Requirements for LND Monitor - Both Versions
-# Core dependencies for original version
-requests>=2.31.0
-requests[socks]>=2.31.0
-urllib3>=2.0.0
+# Requirements for LND Monitor
+# Modern async implementation using python-telegram-bot
 
-# New dependencies for PTB version
+# Telegram bot framework (async)
 python-telegram-bot>=20.7
+
+# HTTP client with async support
 aiohttp>=3.9.0
 aiohttp-socks>=0.8.0
 
-# Optional: For better async performance
+# Legacy urllib3 for SSL warnings suppression
+urllib3>=2.0.0
+
+# Optional: High-performance event loop (Linux/macOS only)
 uvloop>=0.19.0; sys_platform != "win32"

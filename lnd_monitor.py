@@ -2,9 +2,11 @@
 """
 Lightning Node Monitor for Start9
 Monitors an LND node on Start9 (via .onion) from Umbrel and sends Telegram notifications
+Built with python-telegram-bot library using async/await for optimal performance
 """
 
-import requests
+import asyncio
+import aiohttp
 import time
 from datetime import datetime
 import logging
@@ -12,7 +14,13 @@ import sys
 import os
 import base64
 import binascii
-import threading
+import json
+from typing import Optional, Tuple, Dict, Any
+
+from telegram import Update, BotCommand
+from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.constants import ParseMode
+from aiohttp_socks import ProxyConnector
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -60,76 +68,167 @@ else:
     logger.error("Environment variable LND_MACAROON_RO not found!")
     sys.exit(1)
 
-
-
 # Correct Tor configuration for .onion domains
-TOR_PROXY = {
-    'http': 'socks5h://127.0.0.1:9050',
-    'https': 'socks5h://127.0.0.1:9050'
-}
+TOR_PROXY = "socks5://127.0.0.1:9050"
 
-# ============= FUNCTIONS =============
+# Global variables for monitoring state
+last_status = None
+consecutive_failures = 0
+last_successful_check = datetime.now()
+offline_alert_sent = False
 
-def test_tor_connection():
+# ============= HTTP CLIENT FUNCTIONS =============
+
+async def test_tor_connection() -> bool:
     """Test that Tor works for .onion domains"""
     try:
         logger.info("Testing Tor connection with .onion...")
-        # Test with a known .onion site
-        response = requests.get(
-            TOR_CHECK_URL,
-            proxies=TOR_PROXY,
-            timeout=15
-        )
-        if response.status_code == 200:
-            logger.info("✅ Tor works correctly for .onion domains")
-            return True
-        else:
-            logger.warning(f"Tor responds but with status code: {response.status_code}")
-            return False
+        
+        connector = ProxyConnector.from_url(TOR_PROXY)
+        timeout = aiohttp.ClientTimeout(total=15)
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get(TOR_CHECK_URL) as response:
+                if response.status == 200:
+                    logger.info("✅ Tor works correctly for .onion domains")
+                    return True
+                else:
+                    logger.warning(f"Tor responds but with status code: {response.status}")
+                    return False
     except Exception as e:
         logger.error(f"Tor test error: {e}")
         return False
 
-def send_telegram_message(message, chat_id=None):
-    """Send Telegram message"""
+async def make_lnd_request(endpoint: str, method: str = 'GET', data: Optional[Dict] = None) -> Tuple[bool, Optional[Dict]]:
+    """Make HTTP request to LND node via Tor"""
     try:
-        target_chat_id = chat_id or TELEGRAM_CHAT_ID
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {
-            "chat_id": target_chat_id,
-            "text": message,
-            "parse_mode": "HTML"
+        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}{endpoint}"
+        
+        headers = {
+            'Grpc-Metadata-macaroon': MACAROON_HEX
         }
-        response = requests.post(url, data=data, timeout=10)
-        if response.status_code == 200:
-            logger.info("Telegram message sent successfully")
-            return True
-        else:
-            logger.error(f"Telegram sending error: {response.status_code}")
-            return False
+        
+        connector = ProxyConnector.from_url(TOR_PROXY, verify_ssl=False)
+        timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+        
+        async with aiohttp.ClientSession(
+            connector=connector, 
+            timeout=timeout
+        ) as session:
+            if method.upper() == 'GET':
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 200:
+                        return True, await response.json()
+                    elif response.status == 401:
+                        logger.error("Invalid or expired macaroon")
+                        return False, None
+                    else:
+                        logger.warning(f"Request to {endpoint} failed with status: {response.status}")
+                        return False, None
+            
+            elif method.upper() == 'POST':
+                # Add Content-Type only for POST requests
+                post_headers = headers.copy()
+                post_headers['Content-Type'] = 'application/json'
+                async with session.post(url, headers=post_headers, json=data) as response:
+                    if response.status == 200:
+                        return True, await response.json()
+                    else:
+                        logger.warning(f"POST request to {endpoint} failed with status: {response.status}")
+                        return False, None
+                        
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout in request to {endpoint}")
+        return False, None
     except Exception as e:
-        logger.error(f"Telegram sending error: {e}")
-        return False
+        logger.error(f"Error in request to {endpoint}: {e}")
+        return False, None
 
-def get_telegram_updates(offset=0):
-    """Get updates from Telegram bot"""
+# ============= LND API FUNCTIONS =============
+
+async def check_lnd_node() -> Tuple[bool, Optional[Dict]]:
+    """Check LND node status with readonly macaroon"""
+    return await make_lnd_request("/v1/getinfo")
+
+async def get_wallet_balance() -> Tuple[bool, Optional[Dict]]:
+    """Get on-chain wallet balance"""
+    return await make_lnd_request("/v1/balance/blockchain")
+
+async def get_channel_balance() -> Tuple[bool, Optional[Dict]]:
+    """Get Lightning channel balance"""
+    return await make_lnd_request("/v1/balance/channels")
+
+async def get_channels() -> Tuple[bool, Optional[Dict]]:
+    """Get channel information"""
+    return await make_lnd_request("/v1/channels")
+
+async def get_pending_channels() -> Tuple[bool, Optional[Dict]]:
+    """Get pending channel information"""
+    return await make_lnd_request("/v1/channels/pending")
+
+async def get_peers() -> Tuple[bool, Optional[Dict]]:
+    """Get peer information"""
+    return await make_lnd_request("/v1/peers")
+
+async def get_forwarding_history() -> Tuple[bool, Optional[Dict]]:
+    """Get forwarding history for fee analysis"""
+    # Calculate timestamp for 30 days ago
+    thirty_days_ago = int((datetime.now().timestamp() - (30 * 24 * 60 * 60)))
+    
+    data = {
+        'start_time': str(thirty_days_ago),
+        'num_max_events': 100
+    }
+    
+    return await make_lnd_request("/v1/switch", method='POST', data=data)
+
+# ============= UTILITY FUNCTIONS =============
+
+def format_satoshis(sats) -> str:
+    """Format satoshis with proper formatting"""
+    if not sats or sats == '0':
+        return "0 sats"
+    
+    sats = int(sats)
+    if sats >= 100_000_000:  # 1+ BTC
+        btc = sats / 100_000_000
+        return f"{btc:.8f} BTC ({sats:,} sats)"
+    elif sats >= 1_000_000:  # 1+ million sats
+        return f"{sats/1_000_000:.2f}M sats ({sats:,})"
+    elif sats >= 1_000:  # 1+ thousand sats
+        return f"{sats/1_000:.1f}k sats ({sats:,})"
+    else:
+        return f"{sats:,} sats"
+
+def format_node_info(node_info: Optional[Dict]) -> str:
+    """Format node information for Telegram"""
+    if not node_info:
+        return "❌ Unable to get node info"
+    
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-        params = {
-            "offset": offset,
-            "timeout": 10
-        }
-        response = requests.get(url, params=params, timeout=15)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"Error getting Telegram updates: {response.status_code}")
-            return None
+        alias = node_info.get('alias', 'N/A')
+        version = node_info.get('version', 'N/A')
+        block_height = node_info.get('block_height', 'N/A')
+        synced = node_info.get('synced_to_chain', False)
+        num_channels = node_info.get('num_active_channels', 0)
+        
+        status_icon = "🟢" if synced else "🟡"
+        
+        return f"""
+{status_icon} <b>LND Node Online</b>
+📛 Alias: {alias}
+🔧 Version: {version}
+📊 Block: {block_height}
+⚡ Active channels: {num_channels}
+🔗 Synced: {'Yes' if synced else 'No'}
+"""
     except Exception as e:
-        logger.error(f"Error getting Telegram updates: {e}")
-        return None
+        logger.error(f"Error formatting node info: {e}")
+        return "✅ Node online (error parsing info)"
 
-def handle_help_command(chat_id):
+# ============= TELEGRAM COMMAND HANDLERS =============
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help command"""
     help_text = """
 🤖 <b>Start9 LND Monitor Bot</b>
@@ -159,11 +258,11 @@ def handle_help_command(chat_id):
 🔄 Check interval: 2 minutes
 🧅 Connected via Tor
 """
-    send_telegram_message(help_text, chat_id)
+    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
-def handle_info_command(chat_id):
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /info command"""
-    is_online, node_info = check_lnd_node()
+    is_online, node_info = await check_lnd_node()
     
     if is_online and node_info:
         info_text = f"""
@@ -192,13 +291,13 @@ This could be due to:
 Please try again in a few moments.
 """
     
-    send_telegram_message(info_text, chat_id)
+    await update.message.reply_text(info_text, parse_mode=ParseMode.HTML)
 
-def handle_balance_command(chat_id):
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle balance command - shows total node balance"""
     
-    wallet_success, wallet_data = get_wallet_balance()
-    channel_success, channel_data = get_channel_balance()
+    wallet_success, wallet_data = await get_wallet_balance()
+    channel_success, channel_data = await get_channel_balance()
     
     if wallet_success and channel_success:
         total_confirmed = int(wallet_data.get('total_balance', 0))
@@ -225,13 +324,13 @@ def handle_balance_command(chat_id):
     else:
         balance_text = "❌ Unable to retrieve balance information. Node may be offline."
     
-    send_telegram_message(balance_text, chat_id)
+    await update.message.reply_text(balance_text, parse_mode=ParseMode.HTML)
 
-def handle_channels_command(chat_id):
+async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle channels command - shows channel overview"""
     
-    channels_success, channels_data = get_channels()
-    pending_success, pending_data = get_pending_channels()
+    channels_success, channels_data = await get_channels()
+    pending_success, pending_data = await get_pending_channels()
     
     if channels_success:
         channels = channels_data.get('channels', [])
@@ -282,13 +381,13 @@ def handle_channels_command(chat_id):
     else:
         channels_text = "❌ Unable to retrieve channel information. Node may be offline."
     
-    send_telegram_message(channels_text, chat_id)
+    await update.message.reply_text(channels_text, parse_mode=ParseMode.HTML)
 
-def handle_peers_command(chat_id):
+async def peers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle peers command - shows peer connections"""
     
-    peers_success, peers_data = get_peers()
-    node_success, node_info = check_lnd_node()
+    peers_success, peers_data = await get_peers()
+    node_success, node_info = await check_lnd_node()
     
     if peers_success:
         peers = peers_data.get('peers', [])
@@ -325,12 +424,12 @@ def handle_peers_command(chat_id):
     else:
         peers_text = "❌ Unable to retrieve peer information. Node may be offline."
     
-    send_telegram_message(peers_text, chat_id)
+    await update.message.reply_text(peers_text, parse_mode=ParseMode.HTML)
 
-def handle_fees_command(chat_id):
+async def fees_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle fees command - shows fee summary"""
     
-    forwarding_success, forwarding_data = get_forwarding_history()
+    forwarding_success, forwarding_data = await get_forwarding_history()
     
     if forwarding_success:
         events = forwarding_data.get('forwarding_events', [])
@@ -379,357 +478,27 @@ This could mean:
     else:
         fees_text = "❌ Unable to retrieve fee information. Node may be offline."
     
-    send_telegram_message(fees_text, chat_id)
+    await update.message.reply_text(fees_text, parse_mode=ParseMode.HTML)
 
-def clear_old_telegram_messages():
-    """Clear old Telegram messages to prevent spam on startup"""
+# ============= MONITORING FUNCTIONS =============
+
+async def send_notification(application: Application, message: str) -> None:
+    """Send notification message to authorized chat"""
     try:
-        logger.info("Clearing old Telegram messages...")
-        updates = get_telegram_updates(0)
-        
-        if updates and updates.get('ok') and updates.get('result'):
-            if updates['result']:
-                # Get the highest update_id to skip all old messages
-                highest_id = max(update['update_id'] for update in updates['result'])
-                # Mark all as read by calling getUpdates with offset = highest_id + 1
-                get_telegram_updates(highest_id + 1)
-                logger.info(f"Cleared {len(updates['result'])} old messages")
-            else:
-                logger.info("No old messages to clear")
-        
-    except Exception as e:
-        logger.error(f"Error clearing old messages: {e}")
-
-def process_telegram_commands():
-    """Process incoming Telegram commands"""
-    # Clear old messages first to prevent spam
-    clear_old_telegram_messages()
-    
-    last_update_id = 0
-    logger.info("Telegram command processor ready")
-    
-    while True:
-        try:
-            updates = get_telegram_updates(last_update_id + 1)
-            
-            if updates and updates.get('ok') and updates.get('result'):
-                for update in updates['result']:
-                    last_update_id = update['update_id']
-                    
-                    if 'message' in update:
-                        message = update['message']
-                        chat_id = message['chat']['id']
-                        
-                        # Security: Only respond to authorized chat ID
-                        if str(chat_id) != str(TELEGRAM_CHAT_ID):
-                            logger.warning(f"Unauthorized command attempt from chat_id: {chat_id}")
-                            continue
-                        
-                        if 'text' in message:
-                            text = message['text'].lower().strip()
-                            logger.info(f"Received command: {text}")
-                            
-                            if text == '/help' or text == '/start':
-                                handle_help_command(chat_id)
-                            elif text == '/info':
-                                handle_info_command(chat_id)
-                            elif text == '/balance':
-                                handle_balance_command(chat_id)
-                            elif text == '/channels':
-                                handle_channels_command(chat_id)
-                            elif text == '/peers':
-                                handle_peers_command(chat_id)
-                            elif text == '/fees':
-                                handle_fees_command(chat_id)
-                            elif text.startswith('/'):
-                                # Only respond to unknown commands that start with /
-                                send_telegram_message("❓ Unknown command. Send /help for available commands.", chat_id)
-                            # Ignore non-command messages
-            
-            time.sleep(2)  # Poll every 2 seconds
-            
-        except Exception as e:
-            logger.error(f"Error processing Telegram commands: {e}")
-            time.sleep(10)  # Wait longer on error
-
-def check_lnd_node():
-    """Check LND node status with readonly macaroon"""
-    try:
-        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}/v1/getinfo"
-        
-        headers = {
-            'Grpc-Metadata-macaroon': MACAROON_HEX,
-        }
-        
-        response = requests.get(
-            url, 
-            headers=headers,
-            proxies=TOR_PROXY,
-            timeout=TIMEOUT,
-            verify=False  
+        await application.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=message,
+            parse_mode=ParseMode.HTML
         )
-        
-        if response.status_code == 200:
-            node_info = response.json()
-            return True, node_info
-        elif response.status_code == 401:
-            logger.error("Invalid or expired macaroon")
-            return False, None
-        else:
-            logger.warning(f"Node responds with status code: {response.status_code}")
-            return False, None
-            
-    except requests.exceptions.Timeout:
-        logger.warning("Timeout in node connection")
-        return False, None
-    except requests.exceptions.ConnectionError:
-        logger.warning("Node connection error")
-        return False, None
+        logger.info("Notification sent successfully")
     except Exception as e:
-        logger.error(f"Error in node check: {e}")
-        return False, None
+        logger.error(f"Error sending notification: {e}")
 
-def get_wallet_balance():
-    """Get on-chain wallet balance"""
-    try:
-        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}/v1/balance/blockchain"
-        headers = {'Grpc-Metadata-macaroon': MACAROON_HEX}
-        
-        response = requests.get(
-            url, 
-            headers=headers,
-            proxies=TOR_PROXY,
-            timeout=TIMEOUT,
-            verify=False
-        )
-        
-        if response.status_code == 200:
-            return True, response.json()
-        else:
-            logger.warning(f"Wallet balance request failed: {response.status_code}")
-            return False, None
-            
-    except Exception as e:
-        logger.error(f"Error getting wallet balance: {e}")
-        return False, None
-
-def get_channel_balance():
-    """Get Lightning channel balance"""
-    try:
-        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}/v1/balance/channels"
-        headers = {'Grpc-Metadata-macaroon': MACAROON_HEX}
-        
-        response = requests.get(
-            url, 
-            headers=headers,
-            proxies=TOR_PROXY,
-            timeout=TIMEOUT,
-            verify=False
-        )
-        
-        if response.status_code == 200:
-            return True, response.json()
-        else:
-            logger.warning(f"Channel balance request failed: {response.status_code}")
-            return False, None
-            
-    except Exception as e:
-        logger.error(f"Error getting channel balance: {e}")
-        return False, None
-
-def get_channels():
-    """Get channel information"""
-    try:
-        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}/v1/channels"
-        headers = {'Grpc-Metadata-macaroon': MACAROON_HEX}
-        
-        response = requests.get(
-            url, 
-            headers=headers,
-            proxies=TOR_PROXY,
-            timeout=TIMEOUT,
-            verify=False
-        )
-        
-        if response.status_code == 200:
-            return True, response.json()
-        else:
-            logger.warning(f"Channels request failed: {response.status_code}")
-            return False, None
-            
-    except Exception as e:
-        logger.error(f"Error getting channels: {e}")
-        return False, None
-
-def get_pending_channels():
-    """Get pending channel information"""
-    try:
-        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}/v1/channels/pending"
-        headers = {'Grpc-Metadata-macaroon': MACAROON_HEX}
-        
-        response = requests.get(
-            url, 
-            headers=headers,
-            proxies=TOR_PROXY,
-            timeout=TIMEOUT,
-            verify=False
-        )
-        
-        if response.status_code == 200:
-            return True, response.json()
-        else:
-            logger.warning(f"Pending channels request failed: {response.status_code}")
-            return False, None
-            
-    except Exception as e:
-        logger.error(f"Error getting pending channels: {e}")
-        return False, None
-
-def get_peers():
-    """Get peer information"""
-    try:
-        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}/v1/peers"
-        headers = {'Grpc-Metadata-macaroon': MACAROON_HEX}
-        
-        response = requests.get(
-            url, 
-            headers=headers,
-            proxies=TOR_PROXY,
-            timeout=TIMEOUT,
-            verify=False
-        )
-        
-        if response.status_code == 200:
-            return True, response.json()
-        else:
-            logger.warning(f"Peers request failed: {response.status_code}")
-            return False, None
-            
-    except Exception as e:
-        logger.error(f"Error getting peers: {e}")
-        return False, None
-
-def get_forwarding_history():
-    """Get forwarding history for fee analysis"""
-    try:
-        url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}/v1/switch"
-        headers = {'Grpc-Metadata-macaroon': MACAROON_HEX}
-        
-        # Calculate timestamp for 30 days ago
-        thirty_days_ago = int((datetime.now().timestamp() - (30 * 24 * 60 * 60)))
-        
-        data = {
-            'start_time': str(thirty_days_ago),
-            'num_max_events': 100
-        }
-        
-        response = requests.post(
-            url, 
-            headers=headers,
-            json=data,
-            proxies=TOR_PROXY,
-            timeout=TIMEOUT,
-            verify=False
-        )
-        
-        if response.status_code == 200:
-            return True, response.json()
-        else:
-            logger.warning(f"Forwarding history request failed: {response.status_code}")
-            return False, None
-            
-    except Exception as e:
-        logger.error(f"Error getting forwarding history: {e}")
-        return False, None
-
-def format_satoshis(sats):
-    """Format satoshis with proper formatting"""
-    if not sats or sats == '0':
-        return "0 sats"
+async def monitoring_loop(application: Application) -> None:
+    """Main monitoring loop"""
+    global last_status, consecutive_failures, last_successful_check, offline_alert_sent
     
-    sats = int(sats)
-    if sats >= 100_000_000:  # 1+ BTC
-        btc = sats / 100_000_000
-        return f"{btc:.8f} BTC ({sats:,} sats)"
-    elif sats >= 1_000_000:  # 1+ million sats
-        return f"{sats/1_000_000:.2f}M sats ({sats:,})"
-    elif sats >= 1_000:  # 1+ thousand sats
-        return f"{sats/1_000:.1f}k sats ({sats:,})"
-    else:
-        return f"{sats:,} sats"
-
-def format_node_info(node_info):
-    """Format node information for Telegram"""
-    if not node_info:
-        return "❌ Unable to get node info"
-    
-    try:
-        alias = node_info.get('alias', 'N/A')
-        version = node_info.get('version', 'N/A')
-        block_height = node_info.get('block_height', 'N/A')
-        synced = node_info.get('synced_to_chain', False)
-        num_channels = node_info.get('num_active_channels', 0)
-        
-        status_icon = "🟢" if synced else "🟡"
-        
-        return f"""
-{status_icon} <b>LND Node Online</b>
-📛 Alias: {alias}
-🔧 Version: {version}
-📊 Block: {block_height}
-⚡ Active channels: {num_channels}
-🔗 Synced: {'Yes' if synced else 'No'}
-"""
-    except Exception as e:
-        logger.error(f"Error formatting node info: {e}")
-        return "✅ Node online (error parsing info)"
-
-def main():
-    """Main monitor function"""
-    logger.info("=== Starting Lightning Node Monitor ===")
-    
-    # Verify configuration
-    if not MACAROON_BASE64:
-        logger.error("Environment variable LND_MACAROON_RO not found!")
-        logger.error("Add to .bashrc: export LND_MACAROON_RO='your_base64_macaroon'")
-        sys.exit(1)
-    
-    # Test Tor for .onion domains
-    logger.info("Verifying that Tor is configured for .onion...")
-    if not test_tor_connection():
-        logger.error("Tor doesn't work for .onion domains!")
-        logger.error("Check: 1) sudo apt install tor && sudo systemctl start tor")
-        logger.error("       2) pip3 install requests[socks]")
-        sys.exit(1)
-    
-    # Send startup message
-    startup_msg = f"""
-🚀 <b>Start9 LND Monitor Started</b>
-🎯 Node: {NODE_ONION_ADDRESS}
-⏱️ Interval: {CHECK_INTERVAL}s
-📍 From: UmbrelOS via Tor
-🔧 Proxy: socks5h://127.0.0.1:9050
-
-🤖 <b>Interactive Bot Active!</b>
-Send /help for available commands
-    """
-    send_telegram_message(startup_msg)
-    
-    # Start command processing in a separate thread
-    logger.info("Starting Telegram command processor...")
-    command_thread = threading.Thread(target=process_telegram_commands, daemon=True)
-    command_thread.start()
-    
-    # Wait a moment for command processor to clear old messages
-    time.sleep(3)
-    
-    # Previous state to avoid spam
-    last_status = None
-    consecutive_failures = 0
-    last_successful_check = datetime.now()
-    offline_alert_sent = False  # Track if we actually sent an offline alert
-    
-    logger.info("Starting monitoring...")
+    logger.info("Starting monitoring loop...")
     
     while True:
         try:
@@ -737,7 +506,7 @@ Send /help for available commands
             logger.info(f"Checking node at {current_time.strftime('%H:%M:%S')}")
             
             # Check the node
-            is_online, node_info = check_lnd_node()
+            is_online, node_info = await check_lnd_node()
             
             if is_online:
                 consecutive_failures = 0
@@ -750,7 +519,7 @@ Send /help for available commands
 ⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
 {format_node_info(node_info)}
                     """
-                    send_telegram_message(initial_msg)
+                    await send_notification(application, initial_msg)
                     logger.info("Initial node status confirmed online")
                 
                 # If it was offline AND we sent an offline alert, send recovery notification
@@ -760,7 +529,7 @@ Send /help for available commands
 ⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
 {format_node_info(node_info)}
                     """
-                    send_telegram_message(uptime_msg)
+                    await send_notification(application, uptime_msg)
                     logger.info("Node back online")
                     offline_alert_sent = False  # Reset the flag
                 
@@ -780,7 +549,7 @@ Send /help for available commands
 ❌ Last successful check: {last_successful_check.strftime('%H:%M:%S')}
 🔄 Failed attempts: {consecutive_failures}
                     """
-                    send_telegram_message(offline_msg)
+                    await send_notification(application, offline_msg)
                     logger.error("Node considered offline")
                     offline_alert_sent = True  # Mark that we sent an offline alert
             
@@ -788,15 +557,130 @@ Send /help for available commands
             last_status = is_online
             
             # Wait for next check
-            time.sleep(CHECK_INTERVAL)
+            await asyncio.sleep(CHECK_INTERVAL)
             
-        except KeyboardInterrupt:
-            logger.info("Monitor stopped manually")
-            send_telegram_message("🛑 <b>Start9 LND Monitor stopped</b>")
-            break
         except Exception as e:
-            logger.error(f"Error in main loop: {e}")
-            time.sleep(60)  # Longer wait in case of error
+            logger.error(f"Error in monitoring loop: {e}")
+            await asyncio.sleep(60)  # Longer wait in case of error
+
+# ============= AUTHORIZATION MIDDLEWARE =============
+
+def check_authorization(func):
+    """Decorator to check if user is authorized"""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Security: Only respond to authorized chat ID
+        if str(chat_id) != str(TELEGRAM_CHAT_ID):
+            logger.warning(f"Unauthorized command attempt from chat_id: {chat_id}, user_id: {user_id}")
+            await update.message.reply_text("❌ Unauthorized access")
+            return
+        
+        return await func(update, context)
+    return wrapper
+
+# Apply authorization to all command handlers
+help_command = check_authorization(help_command)
+info_command = check_authorization(info_command)
+balance_command = check_authorization(balance_command)
+channels_command = check_authorization(channels_command)
+peers_command = check_authorization(peers_command)
+fees_command = check_authorization(fees_command)
+
+# ============= MAIN FUNCTION =============
+
+async def main():
+    """Main function"""
+    logger.info("=== Starting Lightning Node Monitor ===")
+    
+    # Verify configuration
+    if not MACAROON_BASE64:
+        logger.error("Environment variable LND_MACAROON_RO not found!")
+        logger.error("Add to .bashrc: export LND_MACAROON_RO='your_base64_macaroon'")
+        sys.exit(1)
+    
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("Environment variable TELEGRAM_BOT_TOKEN not found!")
+        sys.exit(1)
+        
+    if not TELEGRAM_CHAT_ID:
+        logger.error("Environment variable TELEGRAM_CHAT_ID not found!")
+        sys.exit(1)
+    
+    # Test Tor for .onion domains
+    logger.info("Verifying that Tor is configured for .onion...")
+    if not await test_tor_connection():
+        logger.error("Tor doesn't work for .onion domains!")
+        logger.error("Check: 1) sudo apt install tor && sudo systemctl start tor")
+        logger.error("       2) pip3 install aiohttp[socks]")
+        sys.exit(1)
+    
+    # Create the Application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Add command handlers
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("start", help_command))
+    application.add_handler(CommandHandler("info", info_command))
+    application.add_handler(CommandHandler("balance", balance_command))
+    application.add_handler(CommandHandler("channels", channels_command))
+    application.add_handler(CommandHandler("peers", peers_command))
+    application.add_handler(CommandHandler("fees", fees_command))
+    
+    # Set bot commands for UI
+    commands = [
+        BotCommand("help", "Show available commands"),
+        BotCommand("info", "Get current node information"),
+        BotCommand("balance", "Get total node balance"),
+        BotCommand("channels", "Get channel overview"),
+        BotCommand("peers", "Get peer connections"),
+        BotCommand("fees", "Get routing fees summary"),
+    ]
+    await application.bot.set_my_commands(commands)
+    
+    # Send startup message
+    startup_msg = f"""
+🚀 <b>Start9 LND Monitor Started</b>
+🎯 Node: {NODE_ONION_ADDRESS}
+⏱️ Interval: {CHECK_INTERVAL}s
+📍 From: UmbrelOS via Tor
+🔧 Proxy: socks5://127.0.0.1:9050
+
+🤖 <b>Interactive Bot Active!</b>
+Send /help for available commands
+    """
+    await send_notification(application, startup_msg)
+    
+    # Start the bot
+    await application.initialize()
+    await application.start()
+    
+    # Start monitoring in background
+    monitoring_task = asyncio.create_task(monitoring_loop(application))
+    
+    try:
+        # Start polling
+        await application.updater.start_polling()
+        logger.info("Bot is running...")
+        
+        # Wait for monitoring task
+        await monitoring_task
+        
+    except KeyboardInterrupt:
+        logger.info("Monitor stopped manually")
+        await send_notification(application, "🛑 <b>Start9 LND Monitor stopped</b>")
+    finally:
+        # Cleanup
+        monitoring_task.cancel()
+        await application.stop()
+        await application.shutdown()
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application interrupted")
+    except Exception as e:
+        logger.error(f"Application error: {e}")
+        sys.exit(1)

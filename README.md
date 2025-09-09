@@ -1,21 +1,23 @@
 # LND Monitoring for Start9 Nodes
 
-A Python-based monitoring solution that tracks the health of your Lightning Network Daemon (LND) node running on Start9 via .onion addresses and sends real-time notifications to Telegram.
+A modern Python-based monitoring solution that tracks the health of your Lightning Network Daemon (LND) node running on Start9 via .onion addresses and sends real-time notifications to Telegram. Built with async/await using the `python-telegram-bot` library for optimal performance and reliability.
 
 ## 🚀 Features
 
 - **🔍 Real-time Monitoring**: Continuously monitors your Start9 LND node via Tor
-- **📱 Telegram Notifications**: Instant alerts for node status changes
-- **🧅 Tor Support**: Works seamlessly with .onion addresses
+- **📱 Modern Telegram Bot**: Built with `python-telegram-bot` v20+ for reliability
+- **⚡ Async/Await Architecture**: High-performance async implementation
+- **🧅 Tor Support**: Works seamlessly with .onion addresses via aiohttp
 - **🐳 Docker Ready**: Easy deployment with Docker and Docker Compose
 - **⚡ Smart Alerting**: Prevents false positives with intelligent state tracking
 - **📊 Node Information**: Displays detailed node stats (alias, version, channels, sync status)
 - **🔄 Auto-recovery Detection**: Notifies when node comes back online after outages
-- **🤖 Interactive Bot Commands**: On-demand node information via Telegram commands
+- **🤖 Interactive Bot Commands**: Rich command interface with authorization
 - **⚡ Channel Management**: Monitor channel capacity, balances, and peer connections
 - **💰 Balance Tracking**: View on-chain and Lightning balances in real-time
 - **🌐 Peer Monitoring**: Track connected peers and sync status
 - **💸 Fee Analytics**: Monitor routing performance and earnings
+- **🔒 Security First**: Authorization middleware and readonly macaroon usage
 
 ## 📋 Prerequisites
 
@@ -23,6 +25,8 @@ A Python-based monitoring solution that tracks the health of your Lightning Netw
 - **Start9 LND Node** with .onion address
 - **Telegram Bot** (created via @BotFather)
 - **Tor** running on the monitoring system (port 9050)
+- **Python 3.11+** (if running outside Docker)
+- **Modern async libraries**: `python-telegram-bot` v20+, `aiohttp`, `aiohttp-socks`
 
 ## 🛠️ Installation
 
@@ -35,11 +39,30 @@ cd lnd-monitoring
 
 ### 2. Configure Environment Variables
 
-Copy the example environment file and fill in your actual values:
+Create a `.env` file with your configuration:
 
 ```bash
-cp env.example .env
+# Create .env file
+touch .env
 nano .env
+```
+
+Add the following variables:
+
+```bash
+# Telegram Configuration
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_CHAT_ID=your_chat_id_here
+
+# LND Node Configuration
+LND_NODE_ONION_ADDRESS=your_node.onion
+LND_MACAROON_RO=base64_encoded_readonly_macaroon
+LND_NODE_PORT=8080
+
+# Monitoring Configuration (optional)
+CHECK_INTERVAL=120
+TIMEOUT=30
+MAX_RETRIES=3
 ```
 
 ### 3. Deploy with Docker Compose
@@ -85,6 +108,18 @@ docker-compose up -d
 base64 -w 0 readonly.macaroon
 ```
 
+#### 3. Python Dependencies (if running locally)
+
+```bash
+# Install required packages
+pip install python-telegram-bot[all]>=20.7
+pip install aiohttp>=3.9.0
+pip install aiohttp-socks>=0.8.0
+
+# Optional: For better async performance on Linux/macOS
+pip install uvloop>=0.19.0
+```
+
 ## 🐳 Docker Deployment
 
 ### Using Docker Compose (Recommended)
@@ -126,7 +161,7 @@ docker run -d \
 
 ## 🤖 Interactive Bot Commands
 
-The bot provides interactive commands for on-demand node information:
+The modern bot implementation provides a rich command interface with authorization middleware and automatic command registration. All commands are secured and only respond to the authorized chat ID.
 
 ### Available Commands
 
@@ -138,6 +173,13 @@ The bot provides interactive commands for on-demand node information:
 | `/channels` | Get channel overview | Active channels, capacity, top peers |
 | `/peers` | Get peer connections | Connected peers, sync status |
 | `/fees` | Get routing performance | 30-day earnings, routing events |
+
+### Security Features
+
+- **Authorization Middleware**: All commands check user permissions
+- **Command Registration**: Bot commands appear in Telegram UI automatically
+- **Error Handling**: Graceful error handling with user-friendly messages
+- **Async Performance**: Non-blocking command processing
 
 ### Command Examples
 
@@ -231,7 +273,7 @@ The bot provides interactive commands for on-demand node information:
 
 ## 📱 Telegram Notifications
 
-The monitor sends different types of notifications:
+The modern implementation uses the `python-telegram-bot` library for reliable message delivery with built-in retry logic and error handling:
 
 ### 🚀 Startup Message
 
@@ -240,7 +282,7 @@ The monitor sends different types of notifications:
 🎯 Node: abc123...xyz789.onion
 ⏱️ Interval: 120s
 📍 From: UmbrelOS via Tor
-🔧 Proxy: socks5h://127.0.0.1:9050
+🔧 Proxy: socks5://127.0.0.1:9050
 
 🤖 Interactive Bot Active!
 Send /help for available commands
@@ -275,6 +317,42 @@ Send /help for available commands
 🛑 Start9 LND Monitor stopped
 ```
 
+## 🏗️ Architecture
+
+### Modern Async Implementation
+
+The monitor is built using modern Python async/await patterns for optimal performance:
+
+- **`python-telegram-bot` v20+**: Latest async Telegram bot framework
+- **`aiohttp`**: High-performance async HTTP client for LND API calls
+- **`aiohttp-socks`**: Tor proxy support for .onion connections
+- **Concurrent Operations**: Non-blocking monitoring and command handling
+- **Graceful Error Handling**: Robust error recovery and logging
+
+### Key Components
+
+```python
+# Main components of the async architecture
+async def main():
+    # Initialize bot application
+    application = Application.builder().token(TOKEN).build()
+    
+    # Start monitoring loop in background
+    monitoring_task = asyncio.create_task(monitoring_loop(application))
+    
+    # Start telegram bot polling
+    await application.updater.start_polling()
+```
+
+### Dependencies
+
+| Library | Purpose | Version |
+|---------|---------|---------|
+| `python-telegram-bot` | Modern Telegram bot framework | ≥20.7 |
+| `aiohttp` | Async HTTP client for LND API | ≥3.9.0 |
+| `aiohttp-socks` | Tor proxy support | ≥0.8.0 |
+| `uvloop` | High-performance event loop (Linux/macOS) | ≥0.19.0 |
+
 ## 📊 Monitoring Logic
 
 ### Smart State Tracking
@@ -282,14 +360,16 @@ Send /help for available commands
 - **No False Positives**: Only sends "BACK ONLINE" after actual offline alerts
 - **Configurable Retries**: Requires multiple consecutive failures before alerting
 - **Intelligent Recovery**: Tracks actual outage vs temporary network issues
+- **Async Monitoring**: Non-blocking health checks don't interfere with bot commands
 
 ### Check Sequence
 
-1. **Health Check**: Calls LND's `/v1/getinfo` endpoint via Tor
+1. **Health Check**: Calls LND's `/v1/getinfo` endpoint via Tor (async)
 2. **Failure Tracking**: Counts consecutive failed attempts
 3. **Offline Alert**: Sends alert after `MAX_RETRIES` failures
 4. **Recovery Detection**: Notifies when node comes back online
 5. **Periodic Logging**: Logs status every 30 minutes when healthy
+6. **Command Processing**: Handles Telegram commands concurrently
 
 ## 🔧 Troubleshooting
 
@@ -318,6 +398,33 @@ echo "your_macaroon_here" | base64 -d | hexdump -C
 # Make sure to use readonly macaroon
 ```
 
+#### Bot Authorization Issues
+
+```bash
+# Check if bot token is valid
+curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe"
+
+# Verify chat ID is correct
+# Message @userinfobot on Telegram to get your chat ID
+
+# Check bot logs for authorization errors
+docker logs lnd-monitor | grep -i "unauthorized"
+```
+
+#### Async/Await Issues
+
+```bash
+# If running locally, ensure Python 3.11+
+python3 --version
+
+# Install all async dependencies
+pip install python-telegram-bot[all]>=20.7
+pip install aiohttp>=3.9.0 aiohttp-socks>=0.8.0
+
+# For better performance on Linux/macOS
+pip install uvloop>=0.19.0
+```
+
 ### Logs and Debugging
 
 ```bash
@@ -337,7 +444,11 @@ tail -f data/lnd_monitor.log
 - **Environment Variables**: Sensitive data stored in `.env` file (not committed)
 - **Tor Proxy**: All LND communication goes through Tor for privacy
 - **No Data Storage**: Only logs operational status, no sensitive node data
+- **Authorization Middleware**: Decorator-based command authorization
 - **Chat ID Verification**: Bot only responds to authorized Telegram chat ID
+- **SSL Verification**: Disabled only for .onion connections (required for Tor)
+- **Input Validation**: All user inputs are validated and sanitized
+- **Error Handling**: Sensitive information is never leaked in error messages
 
 ## 🤝 Contributing
 
@@ -365,6 +476,8 @@ If you find this project helpful, consider:
 - **Start9** for making self-sovereign Bitcoin infrastructure accessible
 - **Lightning Network** community for the amazing technology
 - **Umbrel** for the excellent node management platform
+- **python-telegram-bot** team for the excellent async Telegram bot framework
+- **aiohttp** developers for the high-performance async HTTP library
 
 ---
 

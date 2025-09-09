@@ -9,9 +9,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
+# Copy application file
 COPY lnd_monitor.py .
-COPY lnd_monitor_ptb.py .
 
 # Volume for logs
 VOLUME /data
@@ -27,14 +26,5 @@ ENV TIMEOUT="30"
 ENV MAX_RETRIES="3"
 ENV TOR_CHECK_URL="http://check.torproject.org/api/ip"
 
-# Environment variable to choose which version to run
-# Set to "ptb" for python-telegram-bot version, "original" for requests version
-ENV MONITOR_VERSION="ptb"
-
-# Start Tor and the appropriate monitor script
-CMD tor & sleep 5 && \
-    if [ "$MONITOR_VERSION" = "ptb" ]; then \
-        python /app/lnd_monitor_ptb.py; \
-    else \
-        python /app/lnd_monitor.py; \
-    fi
+# Start Tor and the monitor script
+CMD tor & sleep 5 && python /app/lnd_monitor.py
