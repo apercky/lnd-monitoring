@@ -1,13 +1,19 @@
 FROM python:3.11-slim
 
-# installo Tor + requests con socks
+# Install Tor and system dependencies
 RUN apt-get update && apt-get install -y tor && rm -rf /var/lib/apt/lists/*
-RUN pip install requests[socks]
 
 WORKDIR /app
-COPY lnd_monitor.py .
 
-# volume per i log
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY lnd_monitor.py .
+COPY lnd_monitor_ptb.py .
+
+# Volume for logs
 VOLUME /data
 
 # Environment variables
@@ -21,5 +27,14 @@ ENV TIMEOUT="30"
 ENV MAX_RETRIES="3"
 ENV TOR_CHECK_URL="http://check.torproject.org/api/ip"
 
-# avvio tor + lo script
-CMD tor & sleep 5 && python /app/lnd_monitor.py
+# Environment variable to choose which version to run
+# Set to "ptb" for python-telegram-bot version, "original" for requests version
+ENV MONITOR_VERSION="ptb"
+
+# Start Tor and the appropriate monitor script
+CMD tor & sleep 5 && \
+    if [ "$MONITOR_VERSION" = "ptb" ]; then \
+        python /app/lnd_monitor_ptb.py; \
+    else \
+        python /app/lnd_monitor.py; \
+    fi
