@@ -26,6 +26,8 @@ ENV TIMEOUT="60"
 ENV CONNECTION_TIMEOUT="45"
 ENV MAX_RETRIES="3"
 ENV CIRCUIT_REFRESH_INTERVAL="300"
+ENV LOG_RETENTION_DAYS="7"
+ENV LOG_MAX_SIZE_MB="10"
 ENV TOR_CHECK_URL="http://check.torproject.org/api/ip"
 
 # Create Tor configuration for better circuit management

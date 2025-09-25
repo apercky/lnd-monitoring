@@ -10,6 +10,7 @@ import aiohttp
 import time
 from datetime import datetime
 import logging
+import logging.handlers
 import sys
 import os
 import base64
@@ -27,16 +28,52 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DATA_DIR = "/data"
 
-# Logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(f'{DATA_DIR}/lnd_monitor.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
+# Log rotation configuration (defined early)
+LOG_RETENTION_DAYS = int(os.getenv('LOG_RETENTION_DAYS', '7'))    # Keep logs for 7 days
+LOG_MAX_SIZE_MB = int(os.getenv('LOG_MAX_SIZE_MB', '10'))         # Max 10MB per log file
+
+# Logging configuration with rotation
+def setup_logging():
+    """Setup logging with rotation to keep only 7 days of logs"""
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    
+    # Clear any existing handlers
+    logger.handlers.clear()
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    # Rotating file handler - configurable retention and size limits
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        filename=f'{DATA_DIR}/lnd_monitor.log',
+        when='midnight',                    # Rotate at midnight
+        interval=1,                         # Rotate daily
+        backupCount=LOG_RETENTION_DAYS,     # Keep logs for configured days
+        encoding='utf-8'
+    )
+    
+    # Set configurable max file size as backup
+    # If log grows beyond this in a single day, it will still be managed
+    file_handler.maxBytes = LOG_MAX_SIZE_MB * 1024 * 1024
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.INFO)
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.INFO)
+    
+    # Add handlers to logger
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+logger = setup_logging()
+
+# Log the rotation configuration at startup
+logger.info(f"📋 Log rotation configured: {LOG_RETENTION_DAYS} days retention, daily rotation at midnight, {LOG_MAX_SIZE_MB}MB max per file")
 
 # ============= CONFIGURATION =============
 # Telegram Bot
