@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Lightning Node Monitor for Start9
-Monitors an LND node on Start9 (via .onion) from Umbrel and sends Telegram notifications
+Monitors an LND node on Start9 (via .onion) from VPS and sends Telegram notifications
 Built with python-telegram-bot library using async/await for optimal performance
 """
 
@@ -644,7 +644,6 @@ async def main():
 🚀 <b>Start9 LND Monitor Started</b>
 🎯 Node: {NODE_ONION_ADDRESS}
 ⏱️ Interval: {CHECK_INTERVAL}s
-📍 From: UmbrelOS via Tor
 🔧 Proxy: socks5://127.0.0.1:9050
 
 🤖 <b>Interactive Bot Active!</b>
