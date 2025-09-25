@@ -22,9 +22,18 @@ ENV LND_NODE_PORT="8080"
 ENV TELEGRAM_BOT_TOKEN=""
 ENV TELEGRAM_CHAT_ID=""
 ENV CHECK_INTERVAL="120"
-ENV TIMEOUT="30"
+ENV TIMEOUT="60"
+ENV CONNECTION_TIMEOUT="45"
 ENV MAX_RETRIES="3"
+ENV CIRCUIT_REFRESH_INTERVAL="300"
+ENV LOG_RETENTION_DAYS="7"
+ENV LOG_MAX_SIZE_MB="10"
 ENV TOR_CHECK_URL="http://check.torproject.org/api/ip"
 
+# Create Tor configuration for better circuit management
+RUN echo "ControlPort 9051" >> /etc/tor/torrc && \
+    echo "CookieAuthentication 1" >> /etc/tor/torrc && \
+    echo "DataDirectory /var/lib/tor" >> /etc/tor/torrc
+
 # Start Tor and the monitor script
-CMD tor & sleep 5 && python /app/lnd_monitor.py
+CMD tor & sleep 10 && python /app/lnd_monitor.py

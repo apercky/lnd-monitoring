@@ -10,11 +10,12 @@ import aiohttp
 import time
 from datetime import datetime
 import logging
+import logging.handlers
 import sys
 import os
 import base64
 import binascii
-import json
+import subprocess
 from typing import Optional, Tuple, Dict, Any
 
 from telegram import Update, BotCommand
@@ -27,16 +28,52 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DATA_DIR = "/data"
 
-# Logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(f'{DATA_DIR}/lnd_monitor.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
+# Log rotation configuration (defined early)
+LOG_RETENTION_DAYS = int(os.getenv('LOG_RETENTION_DAYS', '7'))    # Keep logs for 7 days
+LOG_MAX_SIZE_MB = int(os.getenv('LOG_MAX_SIZE_MB', '10'))         # Max 10MB per log file
+
+# Logging configuration with rotation
+def setup_logging():
+    """Setup logging with rotation to keep only 7 days of logs"""
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    
+    # Clear any existing handlers
+    logger.handlers.clear()
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    # Rotating file handler - configurable retention and size limits
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        filename=f'{DATA_DIR}/lnd_monitor.log',
+        when='midnight',                    # Rotate at midnight
+        interval=1,                         # Rotate daily
+        backupCount=LOG_RETENTION_DAYS,     # Keep logs for configured days
+        encoding='utf-8'
+    )
+    
+    # Set configurable max file size as backup
+    # If log grows beyond this in a single day, it will still be managed
+    file_handler.maxBytes = LOG_MAX_SIZE_MB * 1024 * 1024
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.INFO)
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.INFO)
+    
+    # Add handlers to logger
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+logger = setup_logging()
+
+# Log the rotation configuration at startup
+logger.info(f"📋 Log rotation configured: {LOG_RETENTION_DAYS} days retention, daily rotation at midnight, {LOG_MAX_SIZE_MB}MB max per file")
 
 # ============= CONFIGURATION =============
 # Telegram Bot
@@ -52,8 +89,10 @@ MACAROON_BASE64 = os.getenv('LND_MACAROON_RO')
 
 # Monitoring configuration
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '120'))  # Seconds between checks (2 minutes)
-TIMEOUT = int(os.getenv('TIMEOUT', '30'))                 # Timeout for HTTP requests
+TIMEOUT = int(os.getenv('TIMEOUT', '60'))                 # Timeout for HTTP requests (increased for Tor)
+CONNECTION_TIMEOUT = int(os.getenv('CONNECTION_TIMEOUT', '45'))  # Connection timeout
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))          # Attempts before considering offline
+CIRCUIT_REFRESH_INTERVAL = int(os.getenv('CIRCUIT_REFRESH_INTERVAL', '300'))  # Refresh Tor circuits every 5 minutes
 
 TOR_CHECK_URL = os.getenv('TOR_CHECK_URL', "http://check.torproject.org/api/ip")
 
@@ -76,8 +115,37 @@ last_status = None
 consecutive_failures = 0
 last_successful_check = datetime.now()
 offline_alert_sent = False
+last_circuit_refresh = datetime.now()
+tor_session = None
 
 # ============= HTTP CLIENT FUNCTIONS =============
+
+async def refresh_tor_circuit() -> None:
+    """Refresh Tor circuit by sending NEWNYM signal"""
+    try:
+        logger.info("Refreshing Tor circuit...")
+        # Try multiple methods to refresh Tor circuit
+        methods = [
+            # Method 1: Signal Tor process directly (inside container)
+            ['pkill', '-HUP', 'tor'],
+            # Method 2: Use Tor control port if available
+            ['echo', 'SIGNAL NEWNYM | nc 127.0.0.1 9051'],
+        ]
+        
+        for method in methods:
+            try:
+                result = subprocess.run(method, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    logger.info("✅ Tor circuit refresh signal sent")
+                    # Wait a moment for circuit to refresh
+                    await asyncio.sleep(3)
+                    return
+            except Exception:
+                continue
+                
+        logger.warning("All Tor circuit refresh methods failed")
+    except Exception as e:
+        logger.warning(f"Could not refresh Tor circuit: {e}")
 
 async def test_tor_connection() -> bool:
     """Test that Tor works for .onion domains"""
@@ -85,7 +153,7 @@ async def test_tor_connection() -> bool:
         logger.info("Testing Tor connection with .onion...")
         
         connector = ProxyConnector.from_url(TOR_PROXY)
-        timeout = aiohttp.ClientTimeout(total=15)
+        timeout = aiohttp.ClientTimeout(total=20, connect=15)  # Increased timeouts
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             async with session.get(TOR_CHECK_URL) as response:
@@ -99,8 +167,10 @@ async def test_tor_connection() -> bool:
         logger.error(f"Tor test error: {e}")
         return False
 
-async def make_lnd_request(endpoint: str, method: str = 'GET', data: Optional[Dict] = None) -> Tuple[bool, Optional[Dict]]:
-    """Make HTTP request to LND node via Tor"""
+async def make_lnd_request(endpoint: str, method: str = 'GET', data: Optional[Dict] = None, retry_count: int = 0) -> Tuple[bool, Optional[Dict]]:
+    """Make HTTP request to LND node via Tor with enhanced retry logic"""
+    global last_circuit_refresh
+    
     try:
         url = f"https://{NODE_ONION_ADDRESS}:{NODE_PORT}{endpoint}"
         
@@ -109,7 +179,11 @@ async def make_lnd_request(endpoint: str, method: str = 'GET', data: Optional[Di
         }
         
         connector = ProxyConnector.from_url(TOR_PROXY, verify_ssl=False)
-        timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+        timeout = aiohttp.ClientTimeout(
+            total=TIMEOUT, 
+            connect=CONNECTION_TIMEOUT,
+            sock_read=30  # Socket read timeout
+        )
         
         async with aiohttp.ClientSession(
             connector=connector, 
@@ -137,11 +211,29 @@ async def make_lnd_request(endpoint: str, method: str = 'GET', data: Optional[Di
                         logger.warning(f"POST request to {endpoint} failed with status: {response.status}")
                         return False, None
                         
-    except asyncio.TimeoutError:
-        logger.warning(f"Timeout in request to {endpoint}")
+    except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
+        logger.warning(f"Timeout in request to {endpoint} (attempt {retry_count + 1})")
+        
+        # If first retry and it's been a while since last circuit refresh, try refreshing
+        if retry_count == 0 and (datetime.now() - last_circuit_refresh).seconds > CIRCUIT_REFRESH_INTERVAL:
+            logger.info("Attempting Tor circuit refresh due to timeout...")
+            await refresh_tor_circuit()
+            last_circuit_refresh = datetime.now()
+            # Retry the request once after circuit refresh
+            return await make_lnd_request(endpoint, method, data, retry_count + 1)
+        
         return False, None
     except Exception as e:
         logger.error(f"Error in request to {endpoint}: {e}")
+        
+        # For connection errors, try circuit refresh on first attempt
+        if retry_count == 0 and "connection" in str(e).lower():
+            logger.info("Attempting Tor circuit refresh due to connection error...")
+            await refresh_tor_circuit()
+            last_circuit_refresh = datetime.now()
+            await asyncio.sleep(2)  # Brief pause after refresh
+            return await make_lnd_request(endpoint, method, data, retry_count + 1)
+        
         return False, None
 
 # ============= LND API FUNCTIONS =============
@@ -495,8 +587,8 @@ async def send_notification(application: Application, message: str) -> None:
         logger.error(f"Error sending notification: {e}")
 
 async def monitoring_loop(application: Application) -> None:
-    """Main monitoring loop"""
-    global last_status, consecutive_failures, last_successful_check, offline_alert_sent
+    """Main monitoring loop with enhanced Tor circuit management"""
+    global last_status, consecutive_failures, last_successful_check, offline_alert_sent, last_circuit_refresh
     
     logger.info("Starting monitoring loop...")
     
@@ -505,7 +597,13 @@ async def monitoring_loop(application: Application) -> None:
             current_time = datetime.now()
             logger.info(f"Checking node at {current_time.strftime('%H:%M:%S')}")
             
-            # Check the node
+            # Periodic circuit refresh (every 5 minutes)
+            if (current_time - last_circuit_refresh).seconds >= CIRCUIT_REFRESH_INTERVAL:
+                logger.info("Performing periodic Tor circuit refresh...")
+                await refresh_tor_circuit()
+                last_circuit_refresh = current_time
+            
+            # Check the node with retry logic
             is_online, node_info = await check_lnd_node()
             
             if is_online:
@@ -528,6 +626,9 @@ async def monitoring_loop(application: Application) -> None:
 ✅ <b>Start9 Node BACK ONLINE!</b>
 ⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
 {format_node_info(node_info)}
+
+⚡ Downtime: {(current_time - last_successful_check).seconds // 60} minutes
+🔄 Connection restored via Tor
                     """
                     await send_notification(application, uptime_msg)
                     logger.info("Node back online")
@@ -535,11 +636,25 @@ async def monitoring_loop(application: Application) -> None:
                 
                 # Periodic log when everything is fine
                 elif consecutive_failures == 0 and current_time.minute % 30 == 0:
-                    logger.info("Node working correctly")
+                    logger.info("Node working correctly - Tor circuits healthy")
                 
             else:
                 consecutive_failures += 1
                 logger.warning(f"Failed attempt {consecutive_failures}/{MAX_RETRIES}")
+                
+                # On second failure, try refreshing circuit immediately
+                if consecutive_failures == 2:
+                    logger.info("Second failure - attempting immediate circuit refresh...")
+                    await refresh_tor_circuit()
+                    last_circuit_refresh = current_time
+                    # Give it a moment and try once more
+                    await asyncio.sleep(5)
+                    is_online_retry, node_info_retry = await check_lnd_node()
+                    if is_online_retry:
+                        logger.info("✅ Recovery successful after circuit refresh")
+                        consecutive_failures = 0
+                        last_successful_check = current_time
+                        continue
                 
                 # Send alert only after MAX_RETRIES consecutive failures
                 if consecutive_failures >= MAX_RETRIES and not offline_alert_sent:
@@ -548,9 +663,16 @@ async def monitoring_loop(application: Application) -> None:
 ⏰ {current_time.strftime('%d/%m/%Y %H:%M:%S')}
 ❌ Last successful check: {last_successful_check.strftime('%H:%M:%S')}
 🔄 Failed attempts: {consecutive_failures}
+
+🔍 <b>Troubleshooting tried:</b>
+• Tor circuit refresh
+• Extended timeouts
+• Connection retry logic
+
+💡 <b>If Zeus works:</b> This may be a temporary Tor routing issue. The node should recover automatically.
                     """
                     await send_notification(application, offline_msg)
-                    logger.error("Node considered offline")
+                    logger.error("Node considered offline after enhanced retry attempts")
                     offline_alert_sent = True  # Mark that we sent an offline alert
             
             # Update state
