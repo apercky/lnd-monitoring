@@ -30,10 +30,8 @@ ENV LOG_RETENTION_DAYS="7"
 ENV LOG_MAX_SIZE_MB="10"
 ENV TOR_CHECK_URL="http://check.torproject.org/api/ip"
 
-# Create Tor configuration for better circuit management
-RUN echo "ControlPort 9051" >> /etc/tor/torrc && \
-    echo "CookieAuthentication 1" >> /etc/tor/torrc && \
-    echo "DataDirectory /var/lib/tor" >> /etc/tor/torrc
+# Fix Tor permissions - simple solution
+RUN chown -R root:root /var/lib/tor
 
 # Start Tor and the monitor script
 CMD tor & sleep 10 && python /app/lnd_monitor.py
